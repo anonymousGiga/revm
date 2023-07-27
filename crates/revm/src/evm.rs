@@ -64,7 +64,7 @@ impl<DB: Database> EVM<DB> {
     pub fn transact(&mut self) -> EVMResult<DB::Error> {
         use tracing::info;
         info!(
-            target : "revm-test-sload", "enter transact ====================================== "
+            target : "evm of revm", "enter transact ====================================== "
         );
         if let Some(db) = self.db.as_mut() {
             let mut noop = NoOpInspector {};
@@ -79,7 +79,7 @@ impl<DB: Database> EVM<DB> {
     pub fn inspect<INSP: Inspector<DB>>(&mut self, mut inspector: INSP) -> EVMResult<DB::Error> {
         use tracing::info;
         info!(
-            target : "revm-test-sload", "enter inspect ====================================== "
+            target : "evm of revm", "enter inspect ====================================== "
         );
         if let Some(db) = self.db.as_mut() {
             evm_inner::<DB, true>(&mut self.env, db, &mut inspector).transact()
