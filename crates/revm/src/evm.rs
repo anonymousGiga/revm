@@ -62,6 +62,10 @@ impl<DB: Database + DatabaseCommit> EVM<DB> {
 impl<DB: Database> EVM<DB> {
     /// Execute transaction without writing to DB, return change state.
     pub fn transact(&mut self) -> EVMResult<DB::Error> {
+        use tracing::info;
+        info!(
+            target : "revm-test-sload", "enter transact ====================================== "
+        );
         if let Some(db) = self.db.as_mut() {
             let mut noop = NoOpInspector {};
             let out = evm_inner::<DB, false>(&mut self.env, db, &mut noop).transact();
@@ -73,6 +77,10 @@ impl<DB: Database> EVM<DB> {
 
     /// Execute transaction with given inspector, without wring to DB. Return change state.
     pub fn inspect<INSP: Inspector<DB>>(&mut self, mut inspector: INSP) -> EVMResult<DB::Error> {
+        use tracing::info;
+        info!(
+            target : "revm-test-sload", "enter inspect ====================================== "
+        );
         if let Some(db) = self.db.as_mut() {
             evm_inner::<DB, true>(&mut self.env, db, &mut inspector).transact()
         } else {

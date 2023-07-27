@@ -8,6 +8,7 @@ use crate::{
     Host, InstructionResult, Transfer,
 };
 use core::cmp::min;
+use minitrace::prelude::*;
 
 pub fn balance<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
     pop_address!(interpreter, address);
@@ -149,6 +150,7 @@ pub fn blockhash(interpreter: &mut Interpreter, host: &mut dyn Host) {
     *number = U256::ZERO;
 }
 
+#[trace]
 pub fn sload<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
     pop!(interpreter, index);
 
