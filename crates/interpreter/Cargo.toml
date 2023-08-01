@@ -26,8 +26,9 @@ proptest = { version = "1.1", optional = true }
 proptest-derive = { version = "0.3", optional = true }
 
 # sload-test
-minitrace = "0.4.1"
-futures = "0.3.28"
+minitrace = { version = "0.5", features = ["enable"] }
+# minitrace = { version = "0.5"}
+# futures = "0.3.28"
 tracing = "0.1.0"
 
 [dev-dependencies]

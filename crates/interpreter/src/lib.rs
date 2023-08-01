@@ -7,6 +7,8 @@ pub mod instruction_result;
 mod instructions;
 mod interpreter;
 
+mod utils;
+
 extern crate alloc;
 extern crate core;
 

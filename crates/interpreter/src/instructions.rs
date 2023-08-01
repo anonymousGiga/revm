@@ -26,12 +26,14 @@ pub fn return_not_found(interpreter: &mut Interpreter, _host: &mut dyn Host) {
     interpreter.instruction_result = InstructionResult::OpcodeNotFound;
 }
 
-use futures::executor::block_on;
+use crate::utils::MyReporter;
+use minitrace::collector::Config;
 use minitrace::prelude::*;
 
 #[inline(always)]
 pub fn eval<H: Host, S: Spec>(opcode: u8, interp: &mut Interpreter, host: &mut H) {
-    let (root, collector) = Span::root("root");
+    minitrace::set_reporter(MyReporter, Config::default());
+    let root = Span::root("root", SpanContext::random());
     {
         let _guard = root.set_local_parent();
         match opcode {
@@ -184,21 +186,6 @@ pub fn eval<H: Host, S: Spec>(opcode: u8, interp: &mut Interpreter, host: &mut H
             _ => return_not_found(interp, host),
         }
     }
-    drop(root);
-    let records: Vec<SpanRecord> = block_on(collector.collect());
 
-    print_span_time(&records, "sload");
-}
-
-fn print_span_time(span_records: &[SpanRecord], event: &str) {
-    use tracing::info;
-    for v in span_records {
-        if v.event == event {
-            info!(
-                target : "revm-test-sload",
-                event,
-                v.duration_ns,
-            );
-        }
-    }
+    minitrace::flush();
 }
