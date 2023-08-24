@@ -8,6 +8,10 @@ use crate::{
     Host, InstructionResult, Transfer,
 };
 use core::cmp::min;
+#[cfg(feature = "open_revm_performance_log")]
+use tracing::*;
+#[cfg(feature = "open_revm_performance_log")]
+use utils::time::TimeRecorder;
 
 pub fn balance<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
     pop_address!(interpreter, address);
@@ -150,6 +154,9 @@ pub fn blockhash(interpreter: &mut Interpreter, host: &mut dyn Host) {
 }
 
 pub fn sload<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
+    #[cfg(feature = "open_revm_performance_log")]
+    let mut time_record = TimeRecorder::now();
+
     pop!(interpreter, index);
 
     let ret = host.sload(interpreter.contract.address, index);
@@ -160,9 +167,14 @@ pub fn sload<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
     let (value, is_cold) = ret.unwrap();
     gas!(interpreter, gas::sload_cost::<SPEC>(is_cold));
     push!(interpreter, value);
+    #[cfg(feature = "open_revm_performance_log")]
+    info!(target: "revm::interpreter", took = ?time_record.elapsed(), "sload");
 }
 
 pub fn sstore<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
+    #[cfg(feature = "open_revm_performance_log")]
+    let mut time_record = TimeRecorder::now();
+
     check_staticcall!(interpreter);
 
     pop!(interpreter, index, value);
@@ -177,6 +189,8 @@ pub fn sstore<SPEC: Spec>(interpreter: &mut Interpreter, host: &mut dyn Host) {
         gas::sstore_cost::<SPEC>(original, old, new, remaining_gas, is_cold)
     });
     refund!(interpreter, gas::sstore_refund::<SPEC>(original, old, new));
+    #[cfg(feature = "open_revm_performance_log")]
+    info!(target: "revm::interpreter", took = ?time_record.elapsed(), "sstore");
 }
 
 pub fn log<const N: u8>(interpreter: &mut Interpreter, host: &mut dyn Host) {

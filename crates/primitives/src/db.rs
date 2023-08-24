@@ -23,6 +23,12 @@ pub trait Database {
 
     // History related
     fn block_hash(&mut self, number: U256) -> Result<B256, Self::Error>;
+
+    // Get metrics
+    #[cfg(feature = "open_revm_metrics_record")]
+    fn get_metric(&mut self) -> (u64, u64, Vec<u64>) {
+        (0u64, 0u64, vec![])
+    }
 }
 
 #[auto_impl(& mut, Box)]

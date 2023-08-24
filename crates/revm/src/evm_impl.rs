@@ -16,6 +16,8 @@ use core::cmp::Ordering;
 use core::{cmp::min, marker::PhantomData};
 use revm_interpreter::{MAX_CODE_SIZE, MAX_INITCODE_SIZE};
 use revm_precompile::{Precompile, Precompiles};
+#[cfg(feature = "open_revm_metrics_record")]
+use revm_utils::{time::TimeRecorder, types::RevmMetricRecord};
 
 pub struct EVMData<'a, DB: Database> {
     pub env: &'a mut Env,
@@ -23,6 +25,8 @@ pub struct EVMData<'a, DB: Database> {
     pub db: &'a mut DB,
     pub error: Option<DB::Error>,
     pub precompiles: Precompiles,
+    #[cfg(feature = "open_revm_metrics_record")]
+    pub total_host_spend_time: u128,
 }
 
 pub struct EVMImpl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> {
@@ -201,7 +205,12 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
 
         // call inner handling of call/create
         // TODO can probably be refactored to look nicer.
-        let (exit_reason, ret_gas, output) = match self.data.env.tx.transact_to {
+        let (exit_reason, ret_gas, output, _instruction_exec_time_records): (
+            InstructionResult,
+            Gas,
+            Output,
+            Vec<(u8, u64)>,
+        ) = match self.data.env.tx.transact_to {
             TransactTo::Call(address) => {
                 if self.data.journaled_state.inc_nonce(caller).is_some() {
                     let context = CallContext {
@@ -223,13 +232,31 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
                         context,
                         is_static: false,
                     };
+                    #[cfg(not(feature = "open_revm_metrics_record"))]
                     let (exit, gas, bytes) = self.call_inner(&mut call_input);
-                    (exit, gas, Output::Call(bytes))
+                    #[cfg(feature = "open_revm_metrics_record")]
+                    let ((exit, gas, bytes), instruction_exec_time_records) =
+                        self.call_inner(&mut call_input);
+
+                    #[cfg(not(feature = "open_revm_metrics_record"))]
+                    let ret: (InstructionResult, Gas, Output, Vec<_>) =
+                        (exit, gas, Output::Call(bytes), vec![]);
+
+                    #[cfg(feature = "open_revm_metrics_record")]
+                    let ret = (
+                        exit,
+                        gas,
+                        Output::Call(bytes),
+                        instruction_exec_time_records,
+                    );
+
+                    ret
                 } else {
                     (
                         InstructionResult::NonceOverflow,
                         gas,
                         Output::Call(Bytes::new()),
+                        vec![],
                     )
                 }
             }
@@ -241,8 +268,25 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
                     init_code: data,
                     gas_limit,
                 };
+                #[cfg(not(feature = "open_revm_metrics_record"))]
                 let (exit, address, ret_gas, bytes) = self.create_inner(&mut create_input);
-                (exit, ret_gas, Output::Create(bytes, address))
+
+                #[cfg(feature = "open_revm_metrics_record")]
+                let ((exit, address, ret_gas, bytes), instruction_exec_time_records) =
+                    self.create_inner(&mut create_input);
+
+                #[cfg(not(feature = "open_revm_metrics_record"))]
+                let ret: (InstructionResult, Gas, Output, Vec<_>) =
+                    (exit, ret_gas, Output::Create(bytes, address), vec![]);
+                #[cfg(feature = "open_revm_metrics_record")]
+                let ret = (
+                    exit,
+                    ret_gas,
+                    Output::Create(bytes, address),
+                    instruction_exec_time_records,
+                );
+
+                ret
             }
         };
 
@@ -285,7 +329,38 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
             }
         };
 
-        Ok(ResultAndState { result, state })
+        #[cfg(not(feature = "open_revm_metrics_record"))]
+        let result_and_state = ResultAndState { result, state };
+        #[cfg(feature = "open_revm_metrics_record")]
+        let result_and_state = {
+            let (sload_hit_counter, sload_not_hit_counter, additional_overhead) =
+                self.data.db.get_metric();
+            let revm_metric_record = RevmMetricRecord {
+                instruction_exec_time_records: _instruction_exec_time_records,
+                total_host_spend_time: self.data.total_host_spend_time,
+                sload_hit_counter,
+                sload_not_hit_counter,
+                additional_overhead,
+            };
+
+            // let mut revm_metric_record = RevmMetricRecord {
+            //     instruction_exec_time_records: _instruction_exec_time_records,
+            //     total_host_spend_time: self.data.total_host_spend_time,
+            //     sload_hit_counter: self.data.journaled_state.sload_hit_counter,
+            //     sload_not_hit_counter: self.data.journaled_state.sload_not_hit_counter,
+            //     additional_overhead: Vec::new(),
+            // };
+
+            // revm_metric_record.additional_overhead =
+            //     std::mem::take(&mut self.data.journaled_state.additional_overhead);
+            ResultAndState {
+                result,
+                state,
+                revm_metric_record,
+            }
+        };
+
+        Ok(result_and_state)
     }
 }
 
@@ -308,6 +383,8 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
                 db,
                 error: None,
                 precompiles,
+                #[cfg(feature = "open_revm_metrics_record")]
+                total_host_spend_time: 0u128,
             },
             inspector,
             _phantomdata: PhantomData {},
@@ -479,6 +556,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
         }
     }
 
+    #[cfg(not(feature = "open_revm_metrics_record"))]
     fn create_inner(
         &mut self,
         inputs: &mut CreateInputs,
@@ -736,6 +814,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
         }
     }
 
+    #[cfg(not(feature = "open_revm_metrics_record"))]
     fn call_inner(&mut self, inputs: &mut CallInputs) -> (InstructionResult, Gas, Bytes) {
         // Call the inspector
         if INSPECT {
@@ -881,13 +960,494 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             (ret, gas, out)
         }
     }
+
+    #[cfg(feature = "open_revm_metrics_record")]
+    fn create_inner(
+        &mut self,
+        inputs: &mut CreateInputs,
+    ) -> (
+        (InstructionResult, Option<B160>, Gas, Bytes),
+        Vec<(u8, u64)>,
+    ) {
+        // Call inspector
+        if INSPECT {
+            let (ret, address, gas, out) = self.inspector.create(&mut self.data, inputs);
+            if ret != InstructionResult::Continue {
+                return (
+                    self.inspector
+                        .create_end(&mut self.data, inputs, ret, address, gas, out),
+                    vec![],
+                );
+            }
+        }
+
+        let gas = Gas::new(inputs.gas_limit);
+        self.load_account(inputs.caller);
+
+        // Check depth of calls
+        if self.data.journaled_state.depth() > CALL_STACK_LIMIT {
+            return (
+                self.create_end(
+                    inputs,
+                    InstructionResult::CallTooDeep,
+                    None,
+                    gas,
+                    Bytes::new(),
+                ),
+                vec![],
+            );
+        }
+        // Check balance of caller and value. Do this before increasing nonce
+        match self.balance(inputs.caller) {
+            Some(i) if i.0 < inputs.value => {
+                return (
+                    self.create_end(
+                        inputs,
+                        InstructionResult::OutOfFund,
+                        None,
+                        gas,
+                        Bytes::new(),
+                    ),
+                    vec![],
+                )
+            }
+            Some(_) => (),
+            _ => {
+                return (
+                    self.create_end(
+                        inputs,
+                        InstructionResult::FatalExternalError,
+                        None,
+                        gas,
+                        Bytes::new(),
+                    ),
+                    vec![],
+                )
+            }
+        }
+
+        // Increase nonce of caller and check if it overflows
+        let old_nonce;
+        if let Some(nonce) = self.data.journaled_state.inc_nonce(inputs.caller) {
+            old_nonce = nonce - 1;
+        } else {
+            return (
+                self.create_end(inputs, InstructionResult::Return, None, gas, Bytes::new()),
+                vec![],
+            );
+        }
+
+        // Create address
+        let code_hash = keccak256(&inputs.init_code);
+        let created_address = match inputs.scheme {
+            CreateScheme::Create => create_address(inputs.caller, old_nonce),
+            CreateScheme::Create2 { salt } => create2_address(inputs.caller, code_hash, salt),
+        };
+        let ret = Some(created_address);
+
+        // Load account so that it will be hot
+        self.load_account(created_address);
+
+        // Enter subroutine
+        let checkpoint = self.data.journaled_state.checkpoint();
+
+        // Create contract account and check for collision
+        match self.data.journaled_state.create_account(
+            created_address,
+            self.data.precompiles.contains(&created_address),
+            self.data.db,
+        ) {
+            Ok(false) => {
+                self.data.journaled_state.checkpoint_revert(checkpoint);
+                return (
+                    self.create_end(
+                        inputs,
+                        InstructionResult::CreateCollision,
+                        ret,
+                        gas,
+                        Bytes::new(),
+                    ),
+                    vec![],
+                );
+            }
+            Err(err) => {
+                self.data.error = Some(err);
+                return (
+                    self.create_end(
+                        inputs,
+                        InstructionResult::FatalExternalError,
+                        ret,
+                        gas,
+                        Bytes::new(),
+                    ),
+                    vec![],
+                );
+            }
+            Ok(true) => (),
+        }
+
+        // Transfer value to contract address
+        if let Err(e) = self.data.journaled_state.transfer(
+            &inputs.caller,
+            &created_address,
+            inputs.value,
+            self.data.db,
+        ) {
+            self.data.journaled_state.checkpoint_revert(checkpoint);
+            return (self.create_end(inputs, e, ret, gas, Bytes::new()), vec![]);
+        }
+
+        // EIP-161: State trie clearing (invariant-preserving alternative)
+        if GSPEC::enabled(SPURIOUS_DRAGON)
+            && self
+                .data
+                .journaled_state
+                .inc_nonce(created_address)
+                .is_none()
+        {
+            // overflow
+            self.data.journaled_state.checkpoint_revert(checkpoint);
+            return (
+                self.create_end(inputs, InstructionResult::Return, None, gas, Bytes::new()),
+                vec![],
+            );
+        }
+
+        // Create new interpreter and execute initcode
+        let contract = Contract::new(
+            Bytes::new(),
+            Bytecode::new_raw(inputs.init_code.clone()),
+            created_address,
+            inputs.caller,
+            inputs.value,
+        );
+
+        #[cfg(feature = "memory_limit")]
+        let mut interpreter = Interpreter::new_with_memory_limit(
+            contract,
+            gas.limit(),
+            false,
+            self.data.env.cfg.memory_limit,
+        );
+
+        #[cfg(not(feature = "memory_limit"))]
+        let mut interpreter = Interpreter::new(contract, gas.limit(), false);
+
+        interpreter.set_cpu_frequency(self.data.env.cpu_frequency);
+
+        if INSPECT {
+            self.inspector
+                .initialize_interp(&mut interpreter, &mut self.data, false);
+        }
+        let exit_reason = if INSPECT {
+            interpreter.run_inspect::<Self, GSPEC>(self)
+        } else {
+            interpreter.run::<Self, GSPEC>(self)
+        };
+        // Host error if present on execution\
+        let (ret, address, gas, out) = match exit_reason {
+            return_ok!() => {
+                // if ok, check contract creation limit and calculate gas deduction on output len.
+                let mut bytes = interpreter.return_value();
+
+                // EIP-3541: Reject new contract code starting with the 0xEF byte
+                if GSPEC::enabled(LONDON) && !bytes.is_empty() && bytes.first() == Some(&0xEF) {
+                    self.data.journaled_state.checkpoint_revert(checkpoint);
+                    return (
+                        self.create_end(
+                            inputs,
+                            InstructionResult::CreateContractStartingWithEF,
+                            ret,
+                            interpreter.gas,
+                            bytes,
+                        ),
+                        interpreter
+                            .instruction_exec_time_records
+                            .take()
+                            .unwrap_or_default(),
+                    );
+                }
+
+                // EIP-170: Contract code size limit
+                // By default limit is 0x6000 (~25kb)
+                if GSPEC::enabled(SPURIOUS_DRAGON)
+                    && bytes.len()
+                        > self
+                            .data
+                            .env
+                            .cfg
+                            .limit_contract_code_size
+                            .unwrap_or(MAX_CODE_SIZE)
+                {
+                    self.data.journaled_state.checkpoint_revert(checkpoint);
+                    return (
+                        self.create_end(
+                            inputs,
+                            InstructionResult::CreateContractSizeLimit,
+                            ret,
+                            interpreter.gas,
+                            bytes,
+                        ),
+                        interpreter
+                            .instruction_exec_time_records
+                            .take()
+                            .unwrap_or_default(),
+                    );
+                }
+                if crate::USE_GAS {
+                    let gas_for_code = bytes.len() as u64 * gas::CODEDEPOSIT;
+                    if !interpreter.gas.record_cost(gas_for_code) {
+                        // record code deposit gas cost and check if we are out of gas.
+                        // EIP-2 point 3: If contract creation does not have enough gas to pay for the
+                        // final gas fee for adding the contract code to the state, the contract
+                        //  creation fails (i.e. goes out-of-gas) rather than leaving an empty contract.
+                        if GSPEC::enabled(HOMESTEAD) {
+                            self.data.journaled_state.checkpoint_revert(checkpoint);
+                            return (
+                                self.create_end(
+                                    inputs,
+                                    InstructionResult::OutOfGas,
+                                    ret,
+                                    interpreter.gas,
+                                    bytes,
+                                ),
+                                interpreter
+                                    .instruction_exec_time_records
+                                    .take()
+                                    .unwrap_or_default(),
+                            );
+                        } else {
+                            bytes = Bytes::new();
+                        }
+                    }
+                }
+                // if we have enough gas
+                self.data.journaled_state.checkpoint_commit();
+                // Do analysis of bytecode straight away.
+                let bytecode = match self.data.env.cfg.perf_analyse_created_bytecodes {
+                    AnalysisKind::Raw => Bytecode::new_raw(bytes.clone()),
+                    AnalysisKind::Check => Bytecode::new_raw(bytes.clone()).to_checked(),
+                    AnalysisKind::Analyse => to_analysed(Bytecode::new_raw(bytes.clone())),
+                };
+
+                self.data
+                    .journaled_state
+                    .set_code(created_address, bytecode);
+                (InstructionResult::Return, ret, interpreter.gas, bytes)
+            }
+            _ => {
+                self.data.journaled_state.checkpoint_revert(checkpoint);
+                (
+                    exit_reason,
+                    ret,
+                    interpreter.gas,
+                    interpreter.return_value(),
+                )
+            }
+        };
+
+        (
+            self.create_end(inputs, ret, address, gas, out),
+            interpreter
+                .instruction_exec_time_records
+                .take()
+                .unwrap_or_default(),
+        )
+    }
+
+    #[cfg(feature = "open_revm_metrics_record")]
+    fn call_inner(
+        &mut self,
+        inputs: &mut CallInputs,
+    ) -> ((InstructionResult, Gas, Bytes), Vec<(u8, u64)>) {
+        // Call the inspector
+        if INSPECT {
+            let (ret, gas, out) = self
+                .inspector
+                .call(&mut self.data, inputs, inputs.is_static);
+            if ret != InstructionResult::Continue {
+                return (
+                    self.inspector.call_end(
+                        &mut self.data,
+                        inputs,
+                        gas,
+                        ret,
+                        out,
+                        inputs.is_static,
+                    ),
+                    vec![],
+                );
+            }
+        }
+
+        let mut gas = Gas::new(inputs.gas_limit);
+        // Load account and get code. Account is now hot.
+        let bytecode = if let Some((bytecode, _)) = self.code(inputs.contract) {
+            bytecode
+        } else {
+            return (
+                (InstructionResult::FatalExternalError, gas, Bytes::new()),
+                vec![],
+            );
+        };
+
+        // Check depth
+        if self.data.journaled_state.depth() > CALL_STACK_LIMIT {
+            let (ret, gas, out) = (InstructionResult::CallTooDeep, gas, Bytes::new());
+            if INSPECT {
+                return (
+                    self.inspector.call_end(
+                        &mut self.data,
+                        inputs,
+                        gas,
+                        ret,
+                        out,
+                        inputs.is_static,
+                    ),
+                    vec![],
+                );
+            } else {
+                return ((ret, gas, out), vec![]);
+            }
+        }
+
+        // Create subroutine checkpoint
+        let checkpoint = self.data.journaled_state.checkpoint();
+
+        // Touch address. For "EIP-158 State Clear", this will erase empty accounts.
+        if inputs.transfer.value == U256::ZERO {
+            self.load_account(inputs.context.address);
+            self.data.journaled_state.touch(&inputs.context.address);
+        }
+
+        // Transfer value from caller to called account
+        if let Err(e) = self.data.journaled_state.transfer(
+            &inputs.transfer.source,
+            &inputs.transfer.target,
+            inputs.transfer.value,
+            self.data.db,
+        ) {
+            self.data.journaled_state.checkpoint_revert(checkpoint);
+            let (ret, gas, out) = (e, gas, Bytes::new());
+            if INSPECT {
+                return (
+                    self.inspector.call_end(
+                        &mut self.data,
+                        inputs,
+                        gas,
+                        ret,
+                        out,
+                        inputs.is_static,
+                    ),
+                    vec![],
+                );
+            } else {
+                return ((ret, gas, out), vec![]);
+            }
+        }
+
+        // Call precompiles
+        let (ret, gas, out, instruction_exec_time_records) =
+            if let Some(precompile) = self.data.precompiles.get(&inputs.contract) {
+                let out = match precompile {
+                    Precompile::Standard(fun) => fun(inputs.input.as_ref(), inputs.gas_limit),
+                    Precompile::Custom(fun) => fun(inputs.input.as_ref(), inputs.gas_limit),
+                };
+                match out {
+                    Ok((gas_used, data)) => {
+                        if !crate::USE_GAS || gas.record_cost(gas_used) {
+                            self.data.journaled_state.checkpoint_commit();
+                            (InstructionResult::Return, gas, Bytes::from(data), vec![])
+                        } else {
+                            self.data.journaled_state.checkpoint_revert(checkpoint);
+                            (InstructionResult::PrecompileOOG, gas, Bytes::new(), vec![])
+                        }
+                    }
+                    Err(e) => {
+                        let ret = if let precompile::Error::OutOfGas = e {
+                            InstructionResult::PrecompileOOG
+                        } else {
+                            InstructionResult::PrecompileError
+                        };
+                        self.data.journaled_state.checkpoint_revert(checkpoint);
+                        (ret, gas, Bytes::new(), vec![])
+                    }
+                }
+            } else {
+                // Create interpreter and execute subcall
+                let contract =
+                    Contract::new_with_context(inputs.input.clone(), bytecode, &inputs.context);
+
+                #[cfg(feature = "memory_limit")]
+                let mut interpreter = Interpreter::new_with_memory_limit(
+                    contract,
+                    gas.limit(),
+                    inputs.is_static,
+                    self.data.env.cfg.memory_limit,
+                );
+
+                #[cfg(not(feature = "memory_limit"))]
+                let mut interpreter = Interpreter::new(contract, gas.limit(), inputs.is_static);
+
+                interpreter.set_cpu_frequency(self.data.env.cpu_frequency);
+
+                if INSPECT {
+                    // create is always no static call.
+                    self.inspector
+                        .initialize_interp(&mut interpreter, &mut self.data, false);
+                }
+                let exit_reason = if INSPECT {
+                    interpreter.run_inspect::<Self, GSPEC>(self)
+                } else {
+                    interpreter.run::<Self, GSPEC>(self)
+                };
+
+                if matches!(exit_reason, return_ok!()) {
+                    self.data.journaled_state.checkpoint_commit();
+                } else {
+                    self.data.journaled_state.checkpoint_revert(checkpoint);
+                }
+
+                (
+                    exit_reason,
+                    interpreter.gas,
+                    interpreter.return_value(),
+                    interpreter
+                        .instruction_exec_time_records
+                        .take()
+                        .unwrap_or_default(),
+                )
+            };
+
+        if INSPECT {
+            (
+                self.inspector
+                    .call_end(&mut self.data, inputs, gas, ret, out, inputs.is_static),
+                instruction_exec_time_records,
+            )
+        } else {
+            ((ret, gas, out), instruction_exec_time_records)
+        }
+    }
 }
 
 impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
     for EVMImpl<'a, GSPEC, DB, INSPECT>
 {
     fn step(&mut self, interp: &mut Interpreter, is_static: bool) -> InstructionResult {
-        self.inspector.step(interp, &mut self.data, is_static)
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
+        let ret = self.inspector.step(interp, &mut self.data, is_static);
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn step_end(
@@ -896,8 +1456,22 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
         is_static: bool,
         ret: InstructionResult,
     ) -> InstructionResult {
-        self.inspector
-            .step_end(interp, &mut self.data, is_static, ret)
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
+        let ret = self
+            .inspector
+            .step_end(interp, &mut self.data, is_static, ret);
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn env(&mut self) -> &mut Env {
@@ -905,33 +1479,77 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
     }
 
     fn block_hash(&mut self, number: U256) -> Option<B256> {
-        self.data
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
+        let ret = self
+            .data
             .db
             .block_hash(number)
             .map_err(|e| self.data.error = Some(e))
-            .ok()
+            .ok();
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn load_account(&mut self, address: B160) -> Option<(bool, bool)> {
-        self.data
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
+        let ret = self
+            .data
             .journaled_state
             .load_account_exist(address, self.data.db)
             .map_err(|e| self.data.error = Some(e))
-            .ok()
+            .ok();
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn balance(&mut self, address: B160) -> Option<(U256, bool)> {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         let db = &mut self.data.db;
         let journal = &mut self.data.journaled_state;
         let error = &mut self.data.error;
-        journal
+        let ret = journal
             .load_account(address, db)
             .map_err(|e| *error = Some(e))
             .ok()
-            .map(|(acc, is_cold)| (acc.info.balance, is_cold))
+            .map(|(acc, is_cold)| (acc.info.balance, is_cold));
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn code(&mut self, address: B160) -> Option<(Bytecode, bool)> {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         let journal = &mut self.data.journaled_state;
         let db = &mut self.data.db;
         let error = &mut self.data.error;
@@ -940,11 +1558,23 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
             .load_code(address, db)
             .map_err(|e| *error = Some(e))
             .ok()?;
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
         Some((acc.info.code.clone().unwrap(), is_cold))
     }
 
     /// Get code hash of address.
     fn code_hash(&mut self, address: B160) -> Option<(B256, bool)> {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         let journal = &mut self.data.journaled_state;
         let db = &mut self.data.db;
         let error = &mut self.data.error;
@@ -956,23 +1586,60 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
         //asume that all precompiles have some balance
         let is_precompile = self.data.precompiles.contains(&address);
         if is_precompile && self.data.env.cfg.perf_all_precompiles_have_balance {
+            #[cfg(feature = "open_revm_metrics_record")]
+            {
+                self.data.total_host_spend_time += time_record
+                    .elapsed()
+                    .to_nanoseconds(self.data.env.cpu_frequency)
+                    as u128;
+            }
+
             return Some((KECCAK_EMPTY, is_cold));
         }
         if acc.is_empty() {
+            #[cfg(feature = "open_revm_metrics_record")]
+            {
+                self.data.total_host_spend_time += time_record
+                    .elapsed()
+                    .to_nanoseconds(self.data.env.cpu_frequency)
+                    as u128;
+            }
+
             // TODO check this for pre tangerine fork
             return Some((B256::zero(), is_cold));
         }
 
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
         Some((acc.info.code_hash, is_cold))
     }
 
     fn sload(&mut self, address: B160, index: U256) -> Option<(U256, bool)> {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         // account is always hot. reference on that statement https://eips.ethereum.org/EIPS/eip-2929 see `Note 2:`
-        self.data
+        let ret = self
+            .data
             .journaled_state
             .sload(address, index, self.data.db)
             .map_err(|e| self.data.error = Some(e))
-            .ok()
+            .ok();
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn sstore(
@@ -981,14 +1648,31 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
         index: U256,
         value: U256,
     ) -> Option<(U256, U256, U256, bool)> {
-        self.data
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
+        let ret = self
+            .data
             .journaled_state
             .sstore(address, index, value, self.data.db)
             .map_err(|e| self.data.error = Some(e))
-            .ok()
+            .ok();
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn log(&mut self, address: B160, topics: Vec<B256>, data: Bytes) {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         if INSPECT {
             self.inspector.log(&mut self.data, &address, &topics, &data);
         }
@@ -998,27 +1682,73 @@ impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
             data,
         };
         self.data.journaled_state.log(log);
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
     }
 
     fn selfdestruct(&mut self, address: B160, target: B160) -> Option<SelfDestructResult> {
+        #[cfg(feature = "open_revm_metrics_record")]
+        let mut time_record = TimeRecorder::now();
+
         if INSPECT {
             self.inspector.selfdestruct(address, target);
         }
-        self.data
+        let ret = self
+            .data
             .journaled_state
             .selfdestruct(address, target, self.data.db)
             .map_err(|e| self.data.error = Some(e))
-            .ok()
+            .ok();
+
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+        }
+
+        ret
     }
 
     fn create(
         &mut self,
         inputs: &mut CreateInputs,
     ) -> (InstructionResult, Option<B160>, Gas, Bytes) {
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            let mut time_record = TimeRecorder::now();
+            let ret = self.create_inner(inputs).0;
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+            return ret;
+        }
+
+        #[cfg(not(feature = "open_revm_metrics_record"))]
         self.create_inner(inputs)
     }
 
     fn call(&mut self, inputs: &mut CallInputs) -> (InstructionResult, Gas, Bytes) {
+        #[cfg(feature = "open_revm_metrics_record")]
+        {
+            let mut time_record = TimeRecorder::now();
+
+            let ret = self.call_inner(inputs).0;
+            self.data.total_host_spend_time += time_record
+                .elapsed()
+                .to_nanoseconds(self.data.env.cpu_frequency)
+                as u128;
+            return ret;
+        }
+
+        #[cfg(not(feature = "open_revm_metrics_record"))]
         self.call_inner(inputs)
     }
 }
