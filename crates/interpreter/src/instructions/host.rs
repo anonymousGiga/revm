@@ -781,6 +781,9 @@ pub fn call_inner<SPEC: Spec>(
     scheme: CallScheme,
     host: &mut dyn Host,
 ) {
+    #[cfg(feature = "enable_call_log1")]
+    let now = minstant::Instant::now();
+
     match scheme {
         CallScheme::DelegateCall => check!(interpreter, SPEC::enabled(HOMESTEAD)), // EIP-7: DELEGATECALL
         CallScheme::StaticCall => check!(interpreter, SPEC::enabled(BYZANTIUM)), // EIP-214: New opcode STATICCALL
@@ -878,6 +881,13 @@ pub fn call_inner<SPEC: Spec>(
         }
     };
 
+    #[cfg(feature = "enable_call_log1")]
+    let now = {
+        let duration = now.elapsed();
+        println!("span1: {:?}", duration.as_nanos());
+        minstant::Instant::now()
+    };
+
     // load account and calculate gas cost.
     let res = host.load_account(to);
     if res.is_none() {
@@ -926,8 +936,21 @@ pub fn call_inner<SPEC: Spec>(
         enable_metric_record: false,
     };
 
+    #[cfg(feature = "enable_call_log1")]
+    let now = {
+        let duration = now.elapsed();
+        println!("span2: {:?}", duration.as_nanos());
+        minstant::Instant::now()
+    };
+
     // Call host to interuct with target contract
     let (reason, gas, return_data) = host.call(&mut call_input);
+    #[cfg(feature = "enable_call_log1")]
+    let now = {
+        let duration = now.elapsed();
+        println!("span3: {:?}", duration.as_nanos());
+        minstant::Instant::now()
+    };
 
     interpreter.return_data_buffer = return_data;
 
@@ -960,6 +983,11 @@ pub fn call_inner<SPEC: Spec>(
         _ => {
             push!(interpreter, U256::ZERO);
         }
+    }
+    #[cfg(feature = "enable_call_log1")]
+    {
+        let duration = now.elapsed();
+        println!("span4: {:?}", duration.as_nanos());
     }
 }
 

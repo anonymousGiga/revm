@@ -67,6 +67,9 @@ arbitrary = ["revm-interpreter/arbitrary"]
 enable_opcode_metrics = ["revm-interpreter/enable_opcode_metrics"]
 enable_cache_record = []
 
+enable_call_log1 = ["revm-interpreter/enable_call_log1"]
+enable_call_log2 = []
+
 
 # deprecated feature
 web3db = []

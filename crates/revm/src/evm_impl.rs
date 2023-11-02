@@ -687,6 +687,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
         } else {
             interpreter.run::<Self, GSPEC>(self)
         };
+
         // Host error if present on execution\
         let (ret, address, gas, out) = match exit_reason {
             return_ok!() => {
@@ -792,6 +793,9 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
 
     #[cfg(not(feature = "enable_opcode_metrics"))]
     fn call_inner(&mut self, inputs: &mut CallInputs) -> (InstructionResult, Gas, Bytes) {
+        #[cfg(feature = "enable_call_log2")]
+        let now = minstant::Instant::now();
+
         // Call the inspector
         if INSPECT {
             let (ret, gas, out) = self
@@ -815,6 +819,12 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             bytecode
         } else {
             return (InstructionResult::FatalExternalError, gas, Bytes::new());
+        };
+        #[cfg(feature = "enable_call_log2")]
+        let now = {
+            let duration = now.elapsed();
+            println!("call_inner span1: {:?}", duration.as_nanos());
+            minstant::Instant::now()
         };
 
         // Check depth
@@ -842,6 +852,12 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             self.load_account(inputs.context.address);
             self.data.journaled_state.touch(&inputs.context.address);
         }
+        #[cfg(feature = "enable_call_log2")]
+        let now = {
+            let duration = now.elapsed();
+            println!("call_inner span2: {:?}", duration.as_nanos());
+            minstant::Instant::now()
+        };
 
         // Transfer value from caller to called account
         if let Err(e) = self.data.journaled_state.transfer(
@@ -865,6 +881,12 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
                 return (ret, gas, out);
             }
         }
+        #[cfg(feature = "enable_call_log2")]
+        let now = {
+            let duration = now.elapsed();
+            println!("call_inner span3: {:?}", duration.as_nanos());
+            minstant::Instant::now()
+        };
 
         // Call precompiles
         let (ret, gas, out) = if let Some(precompile) = self.data.precompiles.get(&inputs.contract)
@@ -927,6 +949,12 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             }
 
             (exit_reason, interpreter.gas, interpreter.return_value())
+        };
+
+        #[cfg(feature = "enable_call_log2")]
+        {
+            let duration = now.elapsed();
+            println!("call_inner span4: {:?}", duration.as_nanos());
         };
 
         if INSPECT {

@@ -65,3 +65,4 @@ arbitrary = [
     "revm-primitives/arbitrary",
 ]
 enable_opcode_metrics = ["revm-primitives/enable_opcode_metrics"]
+enable_call_log1 = []
