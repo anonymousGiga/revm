@@ -1,5 +1,5 @@
-use std::time::Duration;
-
+//! This module defines some types used for revm metrics.
+use crate::time_utils::convert_cycles_to_ms;
 use serde::{Deserialize, Serialize};
 
 pub type RevmMetricRecord = OpcodeRecord;
@@ -98,29 +98,28 @@ impl OpcodeRecord {
 /// The number of cache hits when accessing CacheDb.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Default)]
 pub struct CacheHits {
-    pub hits_in_block_hash: u64,
-    pub hits_in_basic: u64,
-    pub hits_in_storage: u64,
-    pub hits_in_code_by_hash: u64,
+    pub block_hash: u64,
+    pub basic: u64,
+    pub storage: u64,
+    pub code_by_hash: u64,
+    pub load_account: u64,
 }
 
 impl CacheHits {
     pub fn update(&mut self, other: &Self) {
-        self.hits_in_block_hash = self
-            .hits_in_block_hash
-            .checked_add(other.hits_in_block_hash)
+        self.block_hash = self
+            .block_hash
+            .checked_add(other.block_hash)
             .expect("overflow");
-        self.hits_in_basic = self
-            .hits_in_basic
-            .checked_add(other.hits_in_basic)
+        self.basic = self.basic.checked_add(other.basic).expect("overflow");
+        self.storage = self.storage.checked_add(other.storage).expect("overflow");
+        self.code_by_hash = self
+            .code_by_hash
+            .checked_add(other.code_by_hash)
             .expect("overflow");
-        self.hits_in_storage = self
-            .hits_in_storage
-            .checked_add(other.hits_in_storage)
-            .expect("overflow");
-        self.hits_in_code_by_hash = self
-            .hits_in_code_by_hash
-            .checked_add(other.hits_in_code_by_hash)
+        self.load_account = self
+            .load_account
+            .checked_add(other.load_account)
             .expect("overflow");
     }
 }
@@ -128,59 +127,97 @@ impl CacheHits {
 /// The number of cache misses when accessing CacheDb.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Default)]
 pub struct CacheMisses {
-    pub misses_in_block_hash: u64,
-    pub misses_in_basic: u64,
-    pub misses_in_storage: u64,
-    pub misses_in_code_by_hash: u64,
+    pub block_hash: u64,
+    pub basic: u64,
+    pub storage: u64,
+    pub code_by_hash: u64,
+    pub load_account: u64,
 }
 
 impl CacheMisses {
     pub fn update(&mut self, other: &Self) {
-        self.misses_in_block_hash = self
-            .misses_in_block_hash
-            .checked_add(other.misses_in_block_hash)
+        self.block_hash = self
+            .block_hash
+            .checked_add(other.block_hash)
             .expect("overflow");
-        self.misses_in_basic = self
-            .misses_in_basic
-            .checked_add(other.misses_in_basic)
+        self.basic = self.basic.checked_add(other.basic).expect("overflow");
+        self.storage = self.storage.checked_add(other.storage).expect("overflow");
+        self.code_by_hash = self
+            .code_by_hash
+            .checked_add(other.code_by_hash)
             .expect("overflow");
-        self.misses_in_storage = self
-            .misses_in_storage
-            .checked_add(other.misses_in_storage)
-            .expect("overflow");
-        self.misses_in_code_by_hash = self
-            .misses_in_code_by_hash
-            .checked_add(other.misses_in_code_by_hash)
+        self.load_account = self
+            .load_account
+            .checked_add(other.load_account)
             .expect("overflow");
     }
 }
 
-/// The additional cost incurred when CacheDb is not hit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Default)]
+const PENALTY_STEP_SIZE: usize = 200;
+const PENALTY_STEP: [u64; PENALTY_STEP_SIZE] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+    51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
+    75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98,
+    99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+    118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136,
+    137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155,
+    156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174,
+    175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193,
+    194, 195, 196, 197, 198, 199, 200,
+];
+/// The additional cost (cpu cycles) incurred when CacheDb is not hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy)]
 pub struct CacheMissesPenalty {
-    pub penalty_in_block_hash: Duration,
-    pub penalty_in_basic: Duration,
-    pub penalty_in_storage: Duration,
-    pub penalty_in_code_by_hash: Duration,
+    pub block_hash: u64,
+    pub basic: u64,
+    pub storage: u64,
+    pub code_by_hash: u64,
+    pub load_account: u64,
+    #[serde(with = "serde_arrays")]
+    pub percentile: [u64; PENALTY_STEP_SIZE],
 }
+
+impl Default for CacheMissesPenalty {
+    fn default() -> Self {
+        CacheMissesPenalty {
+            block_hash: 0,
+            basic: 0,
+            storage: 0,
+            code_by_hash: 0,
+            load_account: 0,
+            percentile: [0; PENALTY_STEP_SIZE],
+        }
+    }
+}
+
 impl CacheMissesPenalty {
     pub fn update(&mut self, other: &Self) {
-        self.penalty_in_block_hash = self
-            .penalty_in_block_hash
-            .checked_add(other.penalty_in_block_hash)
+        self.block_hash = self
+            .block_hash
+            .checked_add(other.block_hash)
             .expect("overflow");
-        self.penalty_in_basic = self
-            .penalty_in_basic
-            .checked_add(other.penalty_in_basic)
+        self.basic = self.basic.checked_add(other.basic).expect("overflow");
+        self.storage = self.storage.checked_add(other.storage).expect("overflow");
+        self.code_by_hash = self
+            .code_by_hash
+            .checked_add(other.code_by_hash)
             .expect("overflow");
-        self.penalty_in_storage = self
-            .penalty_in_storage
-            .checked_add(other.penalty_in_storage)
+        self.load_account = self
+            .load_account
+            .checked_add(other.load_account)
             .expect("overflow");
-        self.penalty_in_code_by_hash = self
-            .penalty_in_code_by_hash
-            .checked_add(other.penalty_in_code_by_hash)
-            .expect("overflow");
+    }
+
+    pub fn percentile(&mut self, cycles: u64) {
+        let time = convert_cycles_to_ms(cycles);
+
+        for index in 0..PENALTY_STEP_SIZE {
+            if time <= PENALTY_STEP[index] {
+                self.percentile[index] = self.percentile[index].checked_add(1).expect("overflow");
+                return;
+            }
+        }
     }
 }
 
@@ -203,32 +240,40 @@ impl CacheDbRecord {
     /// The number of times CacheDb is accessed in function basic.
     pub fn total_in_basic(&self) -> u64 {
         self.hits
-            .hits_in_basic
-            .checked_add(self.misses.misses_in_basic)
+            .basic
+            .checked_add(self.misses.basic)
             .expect("overflow")
     }
 
     /// The number of times CacheDb is accessed in function code_by_hash.
     pub fn total_in_code_by_hash(&self) -> u64 {
         self.hits
-            .hits_in_code_by_hash
-            .checked_add(self.misses.misses_in_code_by_hash)
+            .code_by_hash
+            .checked_add(self.misses.code_by_hash)
             .expect("overflow")
     }
 
     /// The number of times CacheDb is accessed in function storage.
     pub fn total_in_storage(&self) -> u64 {
         self.hits
-            .hits_in_storage
-            .checked_add(self.misses.misses_in_storage)
+            .storage
+            .checked_add(self.misses.storage)
             .expect("overflow")
     }
 
     /// The number of times CacheDb is accessed in function block_hash.
     pub fn total_in_block_hash(&self) -> u64 {
         self.hits
-            .hits_in_block_hash
-            .checked_add(self.misses.misses_in_block_hash)
+            .block_hash
+            .checked_add(self.misses.block_hash)
+            .expect("overflow")
+    }
+
+    /// The number of times CacheDb is accessed in function load_account.
+    pub fn total_in_load_account(&self) -> u64 {
+        self.hits
+            .load_account
+            .checked_add(self.misses.load_account)
             .expect("overflow")
     }
 
@@ -236,15 +281,12 @@ impl CacheDbRecord {
     pub fn total_hits(&self) -> u64 {
         let mut total = self
             .hits
-            .hits_in_basic
-            .checked_add(self.hits.hits_in_code_by_hash)
+            .basic
+            .checked_add(self.hits.code_by_hash)
             .expect("overflow");
-        total = total
-            .checked_add(self.hits.hits_in_storage)
-            .expect("overflow");
-        total = total
-            .checked_add(self.hits.hits_in_block_hash)
-            .expect("overflow");
+        total = total.checked_add(self.hits.storage).expect("overflow");
+        total = total.checked_add(self.hits.block_hash).expect("overflow");
+        total = total.checked_add(self.hits.load_account).expect("overflow");
 
         total
     }
@@ -253,33 +295,33 @@ impl CacheDbRecord {
     pub fn total_miss(&self) -> u64 {
         let mut total = self
             .misses
-            .misses_in_basic
-            .checked_add(self.misses.misses_in_code_by_hash)
+            .basic
+            .checked_add(self.misses.code_by_hash)
             .expect("overflow");
+        total = total.checked_add(self.misses.storage).expect("overflow");
+        total = total.checked_add(self.misses.block_hash).expect("verflow");
         total = total
-            .checked_add(self.misses.misses_in_storage)
+            .checked_add(self.misses.load_account)
             .expect("overflow");
-        total = total
-            .checked_add(self.misses.misses_in_block_hash)
-            .expect("verflow");
 
         total
     }
 
     /// The additional cost incurred when accessing CacheDb without a cache hit.
-    pub fn total_penalty_times(&self) -> f64 {
+    pub fn total_penalty_times(&self) -> u64 {
         let mut total = self
             .penalty
-            .penalty_in_basic
-            .checked_add(self.penalty.penalty_in_code_by_hash)
+            .basic
+            .checked_add(self.penalty.code_by_hash)
+            .expect("overflow");
+        total = total.checked_add(self.penalty.storage).expect("overflow");
+        total = total
+            .checked_add(self.penalty.block_hash)
             .expect("overflow");
         total = total
-            .checked_add(self.penalty.penalty_in_storage)
-            .expect("overflow");
-        total = total
-            .checked_add(self.penalty.penalty_in_block_hash)
+            .checked_add(self.penalty.load_account)
             .expect("overflow");
 
-        total.as_secs_f64()
+        total
     }
 }
