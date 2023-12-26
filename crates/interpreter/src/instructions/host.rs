@@ -416,11 +416,25 @@ pub fn delegate_call<H: Host, SPEC: Spec>(interpreter: &mut Interpreter<'_>, hos
 }
 
 pub fn static_call<H: Host, SPEC: Spec>(interpreter: &mut Interpreter<'_>, host: &mut H) {
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(
+        true,
+        "static_call opcode started",
+        Some(crate::opcode::STATICCALL),
+    );
+
     call_inner::<SPEC, H>(
         CallScheme::StaticCall,
         interpreter,
         host,
         crate::opcode::STATICCALL,
+    );
+
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(
+        true,
+        "static_call opcode finished",
+        Some(crate::opcode::STATICCALL),
     );
 }
 
@@ -581,6 +595,13 @@ pub fn call_inner<SPEC: Spec, H: Host>(
     }
     interpreter.return_data_buffer = Bytes::new();
 
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(
+        true,
+        "instruction.call_inner.prepare_call_input started",
+        Some(_opcode),
+    );
+
     let mut out_offset: usize = 0;
     let mut out_len: usize = 0;
     let mut call_input: Option<Box<CallInputs>> = None;
@@ -593,6 +614,12 @@ pub fn call_inner<SPEC: Spec, H: Host>(
         &mut call_input,
         _opcode,
     );
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(
+        true,
+        "instruction.call_inner.prepare_call_input finished",
+        Some(_opcode),
+    );
 
     let Some(mut call_input) = call_input else {
         return;
@@ -600,6 +627,8 @@ pub fn call_inner<SPEC: Spec, H: Host>(
 
     // Call host to interact with target contract
     let (reason, gas, return_data) = host.call(&mut call_input, interpreter.shared_memory);
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(true, "host.call finished", Some(_opcode));
 
     interpreter.return_data_buffer = return_data;
     let target_len = min(out_len, interpreter.return_data_buffer.len());
@@ -636,4 +665,6 @@ pub fn call_inner<SPEC: Spec, H: Host>(
             push!(interpreter, U256::ZERO);
         }
     }
+    #[cfg(feature = "enable_static_call_measure")]
+    revm_utils::metrics::time_record(true, "call_inner end", Some(_opcode));
 }

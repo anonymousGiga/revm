@@ -643,12 +643,17 @@ impl<'a, GSPEC: Spec + 'static, DB: Database> EVMImpl<'a, GSPEC, DB> {
         is_static: bool,
         shared_memory: &mut SharedMemory,
     ) -> (InstructionResult, Bytes, Gas) {
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.run_interpreter started", None);
+
         let mut interpreter = Box::new(Interpreter::new(
             contract,
             gas_limit,
             is_static,
             shared_memory,
         ));
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "created new interpreter instance", None);
 
         interpreter.shared_memory.new_context();
 
@@ -664,6 +669,8 @@ impl<'a, GSPEC: Spec + 'static, DB: Database> EVMImpl<'a, GSPEC, DB> {
         let (return_value, gas) = (interpreter.return_value(), *interpreter.gas());
 
         interpreter.shared_memory.free_context();
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.run_interpreter end", None);
 
         (exit_reason, return_value, gas)
     }
@@ -783,11 +790,17 @@ impl<'a, GSPEC: Spec + 'static, DB: Database> EVMImpl<'a, GSPEC, DB> {
 
     /// Main contract call of the EVM.
     fn call_inner(&mut self, inputs: &CallInputs, shared_memory: &mut SharedMemory) -> CallResult {
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.call_inner.prepare_call started", None);
+
         // Prepare call
         let prepared_call = match self.prepare_call(inputs) {
             Ok(o) => o,
             Err(e) => return e,
         };
+
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.call_inner.prepare_call finished", None);
 
         let ret = if let Some(precompile) = self.data.precompiles.get(&inputs.contract) {
             self.call_precompile(precompile, inputs, prepared_call.gas)
@@ -812,6 +825,9 @@ impl<'a, GSPEC: Spec + 'static, DB: Database> EVMImpl<'a, GSPEC, DB> {
             }
         };
 
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.call_inner.call finished", None);
+
         // revert changes or not.
         if matches!(ret.result, return_ok!()) {
             self.data.journaled_state.checkpoint_commit();
@@ -820,6 +836,8 @@ impl<'a, GSPEC: Spec + 'static, DB: Database> EVMImpl<'a, GSPEC, DB> {
                 .journaled_state
                 .checkpoint_revert(prepared_call.checkpoint);
         }
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "revm.call_inner finished", None);
 
         ret
     }

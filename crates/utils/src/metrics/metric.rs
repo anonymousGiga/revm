@@ -205,3 +205,15 @@ pub fn get_transact_time() -> TransactTime {
             .get_transact_time()
     }
 }
+
+/// This function is used to deeply measure STATIC_CALL.
+pub fn time_record(is_target: bool, format: &'static str, opcode: Option<u8>) {
+    if is_target {
+        let s = if opcode.is_some() {
+            format!("{}, opcode is {}", format, opcode.unwrap())
+        } else {
+            format.to_string()
+        };
+        crate::time_utils::time_trace::record(s);
+    }
+}

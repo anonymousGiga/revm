@@ -122,6 +122,9 @@ impl<'a> Interpreter<'a> {
 
         // execute instruction.
         (instruction_table[opcode as usize])(self, host);
+
+        #[cfg(feature = "enable_static_call_measure")]
+        revm_utils::metrics::time_record(true, "interpreter.step", Some(opcode));
     }
 
     /// Executes the interpreter until it returns or stops.

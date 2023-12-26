@@ -78,6 +78,7 @@ with-serde = []
 enable_opcode_metrics = ["revm-interpreter/enable_opcode_metrics"]
 enable_cache_record = ["revm-utils", "hashbrown", "revm-interpreter/enable_cache_record"]
 enable_transact_measure = ["revm-utils"]
+enable_static_call_measure = ["revm-interpreter/enable_static_call_measure", "revm-utils"]
 
 [[example]]
 name = "fork_ref_transact"
