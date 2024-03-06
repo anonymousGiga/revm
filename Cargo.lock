@@ -2407,6 +2407,7 @@ dependencies = [
 [[package]]
 name = "revm-utils"
 version = "0.1.0"
+source = "git+https://github.com/megaeth-labs/reth-perf-utils.git#9f8afc8c3ee56a1ab64d3f511d49d2716531c886"
 dependencies = [
  "allocator-api2",
  "ctor",
